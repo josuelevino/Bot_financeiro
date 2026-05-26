@@ -7,6 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from datetime import datetime, date
+import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,7 +15,13 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
-import os
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    EXCEL_OK = True
+except ImportError:
+    EXCEL_OK = False
+
 TOKEN = os.environ.get("TOKEN", "SEU_TOKEN_AQUI")
 
 logging.basicConfig(
@@ -149,8 +156,9 @@ def menu_principal():
          InlineKeyboardButton("📉 Gráfico Mensal",   callback_data="menu_mensal")],
         [InlineKeyboardButton("📋 Últimos Gastos",   callback_data="menu_ultimos"),
          InlineKeyboardButton("🏷 Categorias",       callback_data="menu_categorias")],
-        [InlineKeyboardButton("🗑 Deletar Gasto",    callback_data="menu_deletar"),
-         InlineKeyboardButton("ℹ️ Ajuda",            callback_data="menu_ajuda")],
+        [InlineKeyboardButton("📥 Exportar Excel",   callback_data="menu_excel"),
+         InlineKeyboardButton("🗑 Deletar Gasto",    callback_data="menu_deletar")],
+        [InlineKeyboardButton("ℹ️ Ajuda",            callback_data="menu_ajuda")],
     ])
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -345,6 +353,131 @@ async def ultimos_gastos(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id
     linhas.append("\n🗑 Para deletar: /deletar <id>")
     await msg.reply_text("\n".join(linhas), parse_mode="Markdown", reply_markup=menu_principal())
 
+async def exportar_excel(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None, msg=None):
+    chat_id = chat_id or update.effective_chat.id
+    msg = msg or update.message
+
+    if not EXCEL_OK:
+        await msg.reply_text("❌ Biblioteca Excel não disponível no servidor.")
+        return
+
+    con = db()
+    todos = con.execute(
+        "SELECT data, descricao, categoria, valor, mes FROM gastos WHERE chat_id=? ORDER BY data DESC",
+        (chat_id,)
+    ).fetchall()
+    resumo_cat = con.execute(
+        "SELECT categoria, SUM(valor) FROM gastos WHERE chat_id=? AND mes=? GROUP BY categoria ORDER BY SUM(valor) DESC",
+        (chat_id, mes_atual())
+    ).fetchall()
+    resumo_mes = con.execute(
+        "SELECT mes, SUM(valor) FROM gastos WHERE chat_id=? GROUP BY mes ORDER BY mes",
+        (chat_id,)
+    ).fetchall()
+    con.close()
+
+    if not todos:
+        await msg.reply_text("📭 Nenhum gasto registrado para exportar.")
+        return
+
+    def borda():
+        s = Side(style="thin", color="BFBFBF")
+        return Border(left=s, right=s, top=s, bottom=s)
+
+    def cel(ws, row, col, valor=None, bold=False, bg=None, fg="000000", fmt=None, align="center"):
+        c = ws.cell(row=row, column=col)
+        if valor is not None:
+            c.value = valor
+        c.font = Font(name="Arial", bold=bold, color=fg, size=10)
+        c.alignment = Alignment(horizontal=align, vertical="center")
+        c.border = borda()
+        if bg:
+            c.fill = PatternFill("solid", start_color=bg)
+        if fmt:
+            c.number_format = fmt
+        return c
+
+    wb = openpyxl.Workbook()
+
+    # ── Aba 1: Lançamentos ──
+    ws1 = wb.active
+    ws1.title = "Lançamentos"
+    ws1.column_dimensions["A"].width = 14
+    ws1.column_dimensions["B"].width = 32
+    ws1.column_dimensions["C"].width = 18
+    ws1.column_dimensions["D"].width = 16
+    ws1.column_dimensions["E"].width = 12
+
+    for i, cab in enumerate(["Data", "Descrição", "Categoria", "Valor (R$)", "Mês"], 1):
+        cel(ws1, 1, i, cab, bold=True, bg="1F4E79", fg="FFFFFF")
+
+    for r, (data, desc, cat, val, mes) in enumerate(todos, 2):
+        bg = "F7F7F7" if r % 2 == 0 else "FFFFFF"
+        cel(ws1, r, 1, data, bg=bg, align="center")
+        cel(ws1, r, 2, desc, bg=bg, align="left")
+        cel(ws1, r, 3, cat,  bg=bg, align="center")
+        cel(ws1, r, 4, val,  bg=bg, fmt='"R$"#,##0.00')
+        cel(ws1, r, 5, mes,  bg=bg, align="center")
+
+    # ── Aba 2: Resumo por Categoria ──
+    ws2 = wb.create_sheet("Resumo por Categoria")
+    ws2.column_dimensions["A"].width = 22
+    ws2.column_dimensions["B"].width = 18
+    ws2.column_dimensions["C"].width = 12
+
+    total_mes = sum(v for _, v in resumo_cat)
+    mes_nome = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"][int(mes_atual().split("-")[1])-1]
+    ws2.merge_cells("A1:C1")
+    t = ws2["A1"]
+    t.value = f"Resumo do Mês — {mes_nome}/{mes_atual().split('-')[0]}"
+    t.font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
+    t.fill = PatternFill("solid", start_color="1F4E79")
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    ws2.row_dimensions[1].height = 24
+
+    for i, cab in enumerate(["Categoria", "Total (R$)", "% do Mês"], 1):
+        cel(ws2, 2, i, cab, bold=True, bg="2E75B6", fg="FFFFFF")
+
+    for r, (cat, val) in enumerate(resumo_cat, 3):
+        pct = (val / total_mes * 100) if total_mes else 0
+        bg = "F7F7F7" if r % 2 == 0 else "FFFFFF"
+        cel(ws2, r, 1, cat,  bg=bg, align="left")
+        cel(ws2, r, 2, val,  bg=bg, fmt='"R$"#,##0.00')
+        cel(ws2, r, 3, pct/100, bg=bg, fmt='0.0%')
+
+    r_tot = len(resumo_cat) + 3
+    cel(ws2, r_tot, 1, "TOTAL", bold=True, bg="70AD47", fg="FFFFFF")
+    cel(ws2, r_tot, 2, total_mes, bold=True, bg="70AD47", fg="FFFFFF", fmt='"R$"#,##0.00')
+    cel(ws2, r_tot, 3, 1.0, bold=True, bg="70AD47", fg="FFFFFF", fmt='0.0%')
+
+    # ── Aba 3: Histórico Mensal ──
+    ws3 = wb.create_sheet("Histórico Mensal")
+    ws3.column_dimensions["A"].width = 14
+    ws3.column_dimensions["B"].width = 18
+
+    for i, cab in enumerate(["Mês", "Total (R$)"], 1):
+        cel(ws3, 1, i, cab, bold=True, bg="1F4E79", fg="FFFFFF")
+
+    for r, (mes, val) in enumerate(resumo_mes, 2):
+        ano_m, m_m = mes.split("-")
+        nome = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"][int(m_m)-1]
+        bg = "F7F7F7" if r % 2 == 0 else "FFFFFF"
+        cel(ws3, r, 1, f"{nome}/{ano_m}", bg=bg)
+        cel(ws3, r, 2, val, bg=bg, fmt='"R$"#,##0.00')
+
+    # Salvar em memória e enviar
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    buf.name = "financas.xlsx"
+
+    await msg.reply_document(
+        document=buf,
+        filename=f"financas_{hoje()}.xlsx",
+        caption="📥 Aqui está sua planilha com todos os gastos!",
+        reply_markup=menu_principal()
+    )
+
 async def deletar_gasto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not ctx.args or not ctx.args[0].isdigit():
@@ -407,6 +540,8 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ultimos_gastos(update, ctx, chat_id=chat_id, msg=msg)
     elif acao == "menu_categorias":
         await ver_categorias(update, ctx, chat_id=chat_id, msg=msg)
+    elif acao == "menu_excel":
+        await exportar_excel(update, ctx, chat_id=chat_id, msg=msg)
     elif acao == "menu_deletar":
         await msg.reply_text("Para deletar um gasto:\n/deletar <id>\n\nVeja os IDs com /ultimos")
     elif acao == "menu_ajuda":
@@ -418,13 +553,15 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📈 *Pizza:* gráfico visual de categorias\n"
             "📉 *Mensal:* evolução mês a mês\n"
             "📋 *Últimos:* últimos 10 lançamentos\n"
+            "📥 *Exportar Excel:* baixar planilha completa\n"
             "🏷 *Categorias:* ver e adicionar categorias\n\n"
             "*Comandos:*\n"
             "/menu — Menu principal\n"
             "/relatorio — Relatório do mês\n"
             "/ultimos — Últimos gastos\n"
             "/deletar <id> — Remover lançamento\n"
-            "/addcategoria <nome> — Nova categoria",
+            "/addcategoria <nome> — Nova categoria\n"
+            "/excel — Exportar planilha",
             parse_mode="Markdown",
             reply_markup=menu_principal()
         )
@@ -441,6 +578,7 @@ def main():
     app.add_handler(CommandHandler("deletar",      deletar_gasto))
     app.add_handler(CommandHandler("addcategoria", add_categoria))
     app.add_handler(CommandHandler("categorias",   ver_categorias))
+    app.add_handler(CommandHandler("excel",        exportar_excel))
     app.add_handler(CallbackQueryHandler(callback_confirmar_categoria, pattern="^confirmar:"))
     app.add_handler(CallbackQueryHandler(callback_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_livre))
