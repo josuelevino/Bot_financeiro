@@ -7,7 +7,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from datetime import datetime, date
-from collections import defaultdict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,7 +14,8 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
-TOKEN = "8957581200:AAF9wj7RvRaK9FGqNm7ykLWKsHSN1tpVpm0"
+import os
+TOKEN = os.environ.get("TOKEN", "SEU_TOKEN_AQUI")
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -129,7 +129,7 @@ def extrair_gasto(texto):
 def teclado_categorias(chat_id, prefixo="cat"):
     cats = get_categorias(chat_id)
     botoes = []
-    linha  = []
+    linha = []
     for i, cat in enumerate(cats):
         linha.append(InlineKeyboardButton(cat, callback_data=f"{prefixo}:{cat}"))
         if len(linha) == 2:
@@ -140,6 +140,18 @@ def teclado_categorias(chat_id, prefixo="cat"):
     return InlineKeyboardMarkup(botoes)
 
 PENDENTES = {}
+
+def menu_principal():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Registrar Gasto",  callback_data="menu_registrar"),
+         InlineKeyboardButton("📊 Relatório do Mês", callback_data="menu_relatorio")],
+        [InlineKeyboardButton("📈 Gráfico de Pizza", callback_data="menu_pizza"),
+         InlineKeyboardButton("📉 Gráfico Mensal",   callback_data="menu_mensal")],
+        [InlineKeyboardButton("📋 Últimos Gastos",   callback_data="menu_ultimos"),
+         InlineKeyboardButton("🏷 Categorias",       callback_data="menu_categorias")],
+        [InlineKeyboardButton("🗑 Deletar Gasto",    callback_data="menu_deletar"),
+         InlineKeyboardButton("ℹ️ Ajuda",            callback_data="menu_ajuda")],
+    ])
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     nome = update.effective_user.first_name
@@ -154,23 +166,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=menu_principal()
     )
 
-def menu_principal():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Registrar Gasto",    callback_data="menu_registrar"),
-         InlineKeyboardButton("📊 Relatório do Mês",   callback_data="menu_relatorio")],
-        [InlineKeyboardButton("📈 Gráfico de Pizza",   callback_data="menu_pizza"),
-         InlineKeyboardButton("📉 Gráfico Mensal",     callback_data="menu_mensal")],
-        [InlineKeyboardButton("📋 Últimos Gastos",     callback_data="menu_ultimos"),
-         InlineKeyboardButton("🏷 Categorias",         callback_data="menu_categorias")],
-        [InlineKeyboardButton("🗑 Deletar Gasto",      callback_data="menu_deletar"),
-         InlineKeyboardButton("ℹ️ Ajuda",              callback_data="menu_ajuda")],
-    ])
-
 async def cmd_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("O que deseja fazer?", reply_markup=menu_principal())
 
 async def mensagem_livre(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    texto   = update.message.text
+    texto = update.message.text
     chat_id = update.effective_chat.id
     valor, descricao = extrair_gasto(texto)
     if valor is None:
@@ -196,15 +196,15 @@ async def mensagem_livre(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def callback_confirmar_categoria(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query = update.callback_query
     chat_id = query.message.chat_id
     await query.answer()
     if chat_id not in PENDENTES:
         await query.message.reply_text("Sessão expirada. Digite o gasto novamente.")
         return
     categoria = query.data.split(":", 1)[1]
-    dados     = PENDENTES.pop(chat_id)
-    valor     = dados["valor"]
+    dados = PENDENTES.pop(chat_id)
+    valor = dados["valor"]
     descricao = dados["descricao"]
     con = db()
     con.execute(
@@ -224,10 +224,10 @@ async def callback_confirmar_categoria(update: Update, ctx: ContextTypes.DEFAULT
 
 async def relatorio(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None, msg=None):
     chat_id = chat_id or update.effective_chat.id
-    msg     = msg or update.message
-    mes     = mes_atual()
-    con     = db()
-    gastos  = con.execute(
+    msg = msg or update.message
+    mes = mes_atual()
+    con = db()
+    gastos = con.execute(
         "SELECT categoria, SUM(valor) FROM gastos WHERE chat_id=? AND mes=? GROUP BY categoria ORDER BY SUM(valor) DESC",
         (chat_id, mes)
     ).fetchall()
@@ -250,10 +250,10 @@ async def relatorio(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None
 
 async def grafico_pizza(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None, msg=None):
     chat_id = chat_id or update.effective_chat.id
-    msg     = msg or update.message
-    mes     = mes_atual()
-    con     = db()
-    gastos  = con.execute(
+    msg = msg or update.message
+    mes = mes_atual()
+    con = db()
+    gastos = con.execute(
         "SELECT categoria, SUM(valor) FROM gastos WHERE chat_id=? AND mes=? GROUP BY categoria ORDER BY SUM(valor) DESC",
         (chat_id, mes)
     ).fetchall()
@@ -265,8 +265,8 @@ async def grafico_pizza(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=
     if not gastos:
         await msg.reply_text("📭 Nenhum gasto este mês para gerar gráfico.")
         return
-    cats  = [g[0] for g in gastos]
-    vals  = [g[1] for g in gastos]
+    cats = [g[0] for g in gastos]
+    vals = [g[1] for g in gastos]
     cores = [CORES_CATEGORIA.get(c, "#CCCCCC") for c in cats]
     fig, ax = plt.subplots(figsize=(8, 6), facecolor="#1a1a2e")
     ax.set_facecolor("#1a1a2e")
@@ -294,9 +294,9 @@ async def grafico_pizza(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=
 
 async def grafico_mensal(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None, msg=None):
     chat_id = chat_id or update.effective_chat.id
-    msg     = msg or update.message
-    con     = db()
-    dados   = con.execute(
+    msg = msg or update.message
+    con = db()
+    dados = con.execute(
         "SELECT mes, SUM(valor) FROM gastos WHERE chat_id=? GROUP BY mes ORDER BY mes",
         (chat_id,)
     ).fetchall()
@@ -304,7 +304,7 @@ async def grafico_mensal(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id
     if not dados:
         await msg.reply_text("📭 Nenhum dado histórico para gerar gráfico.")
         return
-    meses  = [d[0] for d in dados]
+    meses = [d[0] for d in dados]
     totais = [d[1] for d in dados]
     labels = [["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"][int(m.split("-")[1])-1]
               + f"\n{m.split('-')[0]}" for m in meses]
@@ -329,9 +329,9 @@ async def grafico_mensal(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id
 
 async def ultimos_gastos(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None, msg=None):
     chat_id = chat_id or update.effective_chat.id
-    msg     = msg or update.message
-    con     = db()
-    gastos  = con.execute(
+    msg = msg or update.message
+    con = db()
+    gastos = con.execute(
         "SELECT id, valor, descricao, categoria, data FROM gastos WHERE chat_id=? ORDER BY id DESC LIMIT 10",
         (chat_id,)
     ).fetchall()
@@ -362,10 +362,10 @@ async def deletar_gasto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ver_categorias(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id=None, msg=None):
     chat_id = chat_id or update.effective_chat.id
-    msg     = msg or update.message
-    cats    = get_categorias(chat_id)
-    texto   = "🏷 *Categorias disponíveis:*\n\n" + "\n".join(f"• {c}" for c in cats)
-    texto  += "\n\nPara adicionar: /addcategoria <nome>"
+    msg = msg or update.message
+    cats = get_categorias(chat_id)
+    texto = "🏷 *Categorias disponíveis:*\n\n" + "\n".join(f"• {c}" for c in cats)
+    texto += "\n\nPara adicionar: /addcategoria <nome>"
     await msg.reply_text(texto, parse_mode="Markdown", reply_markup=menu_principal())
 
 async def add_categoria(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -384,10 +384,10 @@ async def add_categoria(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Categoria *{nova}* adicionada!", parse_mode="Markdown")
 
 async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query = update.callback_query
     chat_id = query.message.chat_id
     await query.answer()
-    msg  = query.message
+    msg = query.message
     acao = query.data
     if acao == "menu_registrar":
         await msg.reply_text(
@@ -434,18 +434,18 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start",         start))
-    app.add_handler(CommandHandler("menu",          cmd_menu))
-    app.add_handler(CommandHandler("relatorio",     relatorio))
-    app.add_handler(CommandHandler("ultimos",       ultimos_gastos))
-    app.add_handler(CommandHandler("deletar",       deletar_gasto))
-    app.add_handler(CommandHandler("addcategoria",  add_categoria))
-    app.add_handler(CommandHandler("categorias",    ver_categorias))
+    app.add_handler(CommandHandler("start",        start))
+    app.add_handler(CommandHandler("menu",         cmd_menu))
+    app.add_handler(CommandHandler("relatorio",    relatorio))
+    app.add_handler(CommandHandler("ultimos",      ultimos_gastos))
+    app.add_handler(CommandHandler("deletar",      deletar_gasto))
+    app.add_handler(CommandHandler("addcategoria", add_categoria))
+    app.add_handler(CommandHandler("categorias",   ver_categorias))
     app.add_handler(CallbackQueryHandler(callback_confirmar_categoria, pattern="^confirmar:"))
     app.add_handler(CallbackQueryHandler(callback_menu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_livre))
-    print("💰 Bot financeiro rodando! Ctrl+C para parar.")
-    app.run_polling()
+    print("💰 Bot financeiro rodando!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
